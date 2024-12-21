@@ -1,0 +1,418 @@
+---
+title: "Predicting Obesity Levels Declan Riddell"
+output:
+  html_document:
+    df_print: paged
+---
+
+PROPOSAL
+
+My dataset is a 16 attribute data set with about 2100 rows with no missing values. The data were gathered from an online survey. The dataset provides information on obesity levels with data regarding their diet and physical activity. Contained in the dataset are basic qualifier variables like gender, age, and height. Along with those, there are some interesting fields that I am curious to see if they have a correlation with the level of obesity. Examples would be use of technological devices, smoking, or whether the person monitors their calories on a daily basis. There are some interesting hypotheses you can base off of social norms, for example someone who uses their phone more or plays more video games would be much more likely to be obese based on the implication that they are not very physically active. Or perhaps someone who monitors their calories on a daily basis would be more likely to not be obese, as that type of behavior is usually associated with someone who might be very into lifting weights or maintaining a certain level of physique. I would like to find some predictions of obesity using a few different sets of variables after performing some initial analysis such as correlation, multi/univariate normality, and some outlier testing. I am curious to see what the predictions are like when including or excluding genetic factors such as family history of obesity, as well as the split between genders.
+
+```{r,include=FALSE}
+#Packages
+library(caret)
+library(psych)
+library(randomForest)
+library(tidyverse)
+library(nnet)
+library(GGally)
+library(ggcorrplot)
+```
+
+
+```{r}
+setwd("/Users/bond/Downloads/Applied Multivariate Data Analysis/FinalProject/")
+file.exists("ObesityDataSet_raw_and_data_sinthetic.csv")
+original_data = read.table("ObesityDataSet_raw_and_data_sinthetic.csv", sep = ",", header=TRUE)
+summary(original_data)
+
+coded_data = original_data
+#original_data
+```
+
+We have 9 variables in the dataset that are categorical(non-numeric). This means we have to convert these to numerical values. We will create a legend for these variables: Gender, family_history_with_overweight, FAVC, CAEC, SMOKE, SCC, CALC, MTRANS, NObeyesdad
+```{r}
+categoricalToNumeric = function(var) {
+    var.factor = as.numeric(as.factor(var))
+    return (var.factor)
+}
+```
+
+
+```{r}
+#Gender
+
+#Brute force way to convert the categorical fields
+#data.gender = data$Gender
+#data.gender = factor(data.gender)
+#data.gender = as.numeric(factor(data.gender))
+#data.gender # 1 is male, 2 is female
+#data$Gender = data.gender
+#data$Gender
+
+coded_data$Gender = categoricalToNumeric(coded_data$Gender)
+coded_data$Gender
+
+coded_data$family_history_with_overweight = categoricalToNumeric(coded_data$family_history_with_overweight)
+coded_data$family_history_with_overweight
+
+coded_data$FAVC = categoricalToNumeric(coded_data$FAVC)
+coded_data$CAEC = categoricalToNumeric(coded_data$CAEC)
+coded_data$SMOKE = categoricalToNumeric(coded_data$SMOKE)
+coded_data$SCC = categoricalToNumeric(coded_data$SCC)
+coded_data$CALC = categoricalToNumeric(coded_data$CALC)
+coded_data$MTRANS = categoricalToNumeric(coded_data$MTRANS)
+coded_data$NObeyesdad = categoricalToNumeric(coded_data$NObeyesdad)
+
+coded_data
+
+cov_matrix = cov(coded_data)
+corr_matrix = cor(coded_data)
+
+#List the highest correlated variables other than the self-correlation. Self-correlation we know is always 1 and it is much easier to find the highly correlated variables this way rather than just eye-balling the correlation matrix.
+corr_matrix %>%
+  as.data.frame() %>%
+  mutate(var1 = rownames(.)) %>%
+  gather(var2, value, -var1) %>%
+  arrange(desc(value)) %>%
+  group_by(value) %>%
+  filter(row_number()==1)
+
+#Most important variable is obviously the target variable: NObeyesdad. The 3 variables with the highest corrlation to our target seems to be Weight, CAEC, and family_history_with_overweight. Logically speaking that makes sense as the goal is to determine obesity level. Weight is self-explanatory, CAEC or Food between meals would indicate a surplus of standard caloric necessity, and family_history_with_overweight provides insight into the genetic disposition of a person. As with most biological developments, genes play a major role in the outcomes, but do not tell the full story. For fun, we will generate some models using only the highest correlated variables rather than the entire dataset. Although, this dataset is made up of clearly relevant variables and shows good experimental design, we will isolate a few of the variables to gather some more information.
+```
+
+Pairs plot and correlation plot for the dataset
+```{r}
+ggpairs(coded_data) 
+ggcorrplot(corr_matrix, method = "circle")
+```
+
+PCA and FA analysis
+```{r}
+?scale
+
+non_scaled_pca_result = prcomp(coded_data, center=TRUE, scale=TRUE, cor=TRUE)
+summary(non_scaled_pca_result)
+
+scaled_coded_data = scale(coded_data)
+scaled_pca_result = prcomp(scaled_coded_data, center=TRUE, scale=TRUE)
+summary(scaled_pca_result)
+
+#no difference between them because the data is already scaled from converting the categorical data to numerical data
+
+cumulative_variance = cumsum(summary(non_scaled_pca_result)$importance[2, ])
+num_pcs = which(cumulative_variance >= 0.90)[1]
+loadings = non_scaled_pca_result$rotation[, 1:num_pcs]
+print(loadings)
+
+fa_data_varimax = factanal(coded_data, nstart=5, factors=8, rotation="varimax", scores="regression")
+fa_data_varimax
+
+summary(fa_data_varimax$scores)
+scores = fa_data_varimax$scores
+scree(scores)
+
+fa_data = fa(coded_data, nfactors = 8, fm="pa", max.iter = 200, rotate="varimax")
+fa.diagram(fa_data)
+```
+Important to note the distribution of the variance within the dataset as shown with our PCA analysis. Notice that the proportion is unexpected given the tendencies of PCA. With a very uniform distribution of the proportion of variance, we can look at a few contributing factors. Generally, PCA seeks to reduce dimensionality of the dataset and push a high proportion of the datasets variance into a smaller amount of components. The most logical reason for the poor spread of variance within PCA is due to the highly correlated variables in the dataset. As I touched on earlier, the data is all highly correlated, which in our case is quite good as we are predicting a medical diagnosis. This means that generally speaking this dataset is quite clean to begin with, and the design of the experiment is well informed.
+
+
+```{r}
+coded_data$NObeyesdad = as.factor(coded_data$NObeyesdad)
+
+model = glm(NObeyesdad ~ ., data = coded_data, family=binomial(link = logit), trace = TRUE)
+summary(model)
+
+predicted = predict(model, type="response")
+#predicted
+
+#table(Predicted = predicted_classes, Actual = data$label)
+
+ggplot(coded_data, aes(x=predicted, fill=NObeyesdad)) + geom_histogram(position = "identity", bins = 30, alpha = 0.5) + labs(title = "Distribution of Predicted Probabilities", x = "Predicted Probability", y = "Count", fill = "Obesity Level") + theme_minimal()
+```
+
+```{r}
+set.seed(123)
+train_index = createDataPartition(coded_data$NObeyesdad, p = 0.8, list = FALSE)
+train_data = coded_data[train_index,]
+test_data = coded_data[-train_index,]
+?randomForest
+rf_model = randomForest(NObeyesdad ~ ., data = train_data, ntree = 8, mtry = 4, importance = TRUE)
+predictions = predict(rf_model, test_data)
+conf_matrix = confusionMatrix(factor(predictions, levels = 1:7), as.factor(test_data$NObeyesdad))
+plot_data = data.frame(Predicted = predictions, Observed = test_data$NObeyesdad)
+conf_matrix
+ggplot(data=as.data.frame(conf_matrix$table), aes(x=Prediction, y=Reference)) + geom_tile(color = "red") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  geom_text(aes(label = Freq), color = "yellow", size = 4) +
+  labs(title = "Full Features RF",
+       x = "Predicted Class",
+       y = "Actual Class") +
+  theme_minimal()
+
+ggplot(plot_data, aes(x=Predicted, y = Observed)) + geom_point() + 
+                 geom_abline(intercept = 0, slope = 1, color = "green")
+```
+```{r}
+set.seed(123)
+train_index = createDataPartition(coded_data$NObeyesdad, p = .8, list = FALSE)
+train_data = coded_data[train_index,]
+test_data = coded_data[-train_index,]
+
+lr_model = multinom(NObeyesdad ~ ., data=train_data)
+summary(lr_model)
+predictions = predict(lr_model, test_data)
+levels(predictions)
+levels(as.factor(test_data$NObeyesdad))
+conf_matrix = confusionMatrix(predictions, as.factor(test_data$NObeyesdad))
+print(conf_matrix)
+
+ggplot(data=as.data.frame(conf_matrix$table), aes(x=Prediction, y=Reference)) + geom_tile(color = "red") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  geom_text(aes(label = Freq), color = "yellow", size = 4) +
+  labs(title = "Full Features LR",
+       x = "Predicted Class",
+       y = "Actual Class") +
+  theme_minimal()
+```
+
+```{r}
+set.seed(123)
+set.seed(123)
+knn_model = train(
+  NObeyesdad ~ ., 
+  data = train_data, 
+  method = "knn",
+  tuneLength = 10,  # Tunes k value from 1 to 10
+  trControl = trainControl(method = "cv", number = 10) # 10-fold cross-validation
+)
+print(knn_model)
+
+predictions = predict(knn_model, test_data)
+conf_matrix = confusionMatrix(predictions, test_data$NObeyesdad)
+print(conf_matrix)
+ggplot(data=as.data.frame(conf_matrix$table), aes(x=Prediction, y=Reference)) + geom_tile(color = "red") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  geom_text(aes(label = Freq), color = "yellow", size = 4) +
+  labs(title = "Full Features KNN",
+       x = "Predicted Class",
+       y = "Actual Class") +
+  theme_minimal()
+```
+Highest Correlated Variables Subset
+```{r}
+highest_corr_subset = coded_data[c("Weight", "CAEC", "family_history_with_overweight", "NObeyesdad")]
+as.data.frame(highest_corr_subset)
+typeof(highest_corr_subset)
+highest_corr_subset$NObeyesdad = as.numeric(highest_corr_subset$NObeyesdad)
+
+corr_matrix_hcs = cor(highest_corr_subset)
+
+ggpairs(highest_corr_subset) 
+ggcorrplot(corr_matrix_hcs, method = "circle")
+
+set.seed(123)
+train_index_hcs = createDataPartition(highest_corr_subset$NObeyesdad, p = 0.8, list = FALSE)
+train_data_hcs = highest_corr_subset[train_index_hcs,]
+test_data_hcs = highest_corr_subset[-train_index_hcs,]
+
+lr_model_hcs = multinom(NObeyesdad ~ ., data=train_data_hcs)
+summary(lr_model_hcs)
+predictions = predict(lr_model_hcs, test_data_hcs)
+
+levels(predictions)
+levels(as.factor(test_data_hcs$NObeyesdad))
+
+conf_matrix_lr_hcs = confusionMatrix(predictions, as.factor(test_data_hcs$NObeyesdad))
+print(conf_matrix_lr_hcs)
+
+ggplot(data=as.data.frame(conf_matrix_lr_hcs$table), aes(x=Prediction, y=Reference)) + geom_tile(color = "white") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  geom_text(aes(label = Freq), color = "green", size = 4) +
+  labs(title = "Highest Corr Subset(3) LR",
+       x = "Predicted Class",
+       y = "Actual Class") +
+  theme_minimal()
+
+rf_model_hcs = randomForest(NObeyesdad ~ ., data = train_data_hcs, ntree = 100, mtry = 3, importance = TRUE)
+predictions_rf = predict(rf_model_hcs, test_data_hcs)
+print(predictions_rf)
+conf_matrix_rf_hcs = confusionMatrix(factor(predictions, levels = 1:7), as.factor(test_data_hcs$NObeyesdad))
+conf_matrix_rf_hcs
+
+ggplot(data=as.data.frame(conf_matrix_rf_hcs$table), aes(x=Prediction, y=Reference)) + geom_tile(color = "white") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  geom_text(aes(label = Freq), color = "green", size = 4) +
+  labs(title = "Highest Corr Subset(3) RF",
+       x = "Predicted Class",
+       y = "Actual Class") +
+  theme_minimal()
+
+set.seed(123)
+knn_model_hcs = train(
+  NObeyesdad ~ ., 
+  data = train_data_hcs, 
+  method = "knn",
+  tuneLength = 10,  # Tunes k value from 1 to 10
+  trControl = trainControl(method = "cv", number = 10) # 10-fold cross-validation
+)
+print(knn_model_hcs)
+
+predictions_knn = predict(knn_model_hcs, test_data_hcs)
+predictions_knn
+conf_matrix_hcs_knn = confusionMatrix(factor(predictions_knn, levels = 1:7), as.factor(test_data_hcs$NObeyesdad))
+print(conf_matrix_hcs_knn)
+
+ggplot(data=as.data.frame(conf_matrix_hcs_knn$table), aes(x=Prediction, y=Reference)) + geom_tile(color = "white") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  geom_text(aes(label = Freq), color = "green", size = 4) +
+  labs(title = "Highest Corr Subset(3) KNN",
+       x = "Predicted Class",
+       y = "Actual Class") +
+  theme_minimal()
+```
+Lowest Correlated Variables subset:
+```{r}
+lowest_corr_subset = coded_data[c("FAF", "NCP", "TUE", "NObeyesdad")]
+lowest_corr_subset
+lowest_corr_subset$NObeyesdad = as.numeric(lowest_corr_subset$NObeyesdad)
+corr_matrix_lcs = cor(lowest_corr_subset)
+
+ggpairs(lowest_corr_subset) 
+ggcorrplot(corr_matrix_lcs, method = "circle")
+
+set.seed(123)
+train_index_lcs = createDataPartition(lowest_corr_subset$NObeyesdad, p = 0.8, list = FALSE)
+train_data_lcs = lowest_corr_subset[train_index_lcs,]
+test_data_lcs = lowest_corr_subset[-train_index_lcs,]
+
+lr_model_lcs = multinom(NObeyesdad ~ ., data=train_data_lcs)
+summary(lr_model_lcs)
+predictions = predict(lr_model_lcs, test_data_lcs)
+
+levels(predictions)
+levels(as.factor(test_data_lcs$NObeyesdad))
+
+conf_matrix_lr_lcs = confusionMatrix(predictions, as.factor(test_data_lcs$NObeyesdad))
+print(conf_matrix_lr_lcs)
+
+ggplot(data=as.data.frame(conf_matrix_lr_lcs$table), aes(x=Prediction, y=Reference)) + geom_tile(color = "white") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  geom_text(aes(label = Freq), color = "orange", size = 4) +
+  labs(title = "Lowest Corr Subset(3) LR",
+       x = "Predicted Class",
+       y = "Actual Class") +
+  theme_minimal()
+
+rf_model_lcs = randomForest(NObeyesdad ~ ., data = train_data_lcs, ntree = 100, mtry = 3, importance = TRUE)
+predictions_rf = predict(rf_model_lcs, test_data_lcs)
+print(predictions_rf)
+conf_matrix_rf_lcs = confusionMatrix(factor(predictions, levels = 1:7), as.factor(test_data_lcs$NObeyesdad))
+conf_matrix_rf_lcs
+
+ggplot(data=as.data.frame(conf_matrix_rf_lcs$table), aes(x=Prediction, y=Reference)) + geom_tile(color = "white") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  geom_text(aes(label = Freq), color = "orange", size = 4) +
+  labs(title = "Lowest Corr Subset(3) RF",
+       x = "Predicted Class",
+       y = "Actual Class") +
+  theme_minimal()
+
+set.seed(123)
+knn_model_lcs = train(
+  NObeyesdad ~ ., 
+  data = train_data_lcs, 
+  method = "knn",
+  tuneLength = 10,  # Tunes k value from 1 to 10
+  trControl = trainControl(method = "cv", number = 10) # 10-fold cross-validation
+)
+print(knn_model_lcs)
+
+predictions_knn = predict(knn_model_lcs, test_data_lcs)
+predictions_knn
+conf_matrix_lcs_knn = confusionMatrix(factor(predictions_knn, levels = 1:7), as.factor(test_data_lcs$NObeyesdad))
+print(conf_matrix_lcs_knn)
+
+ggplot(data=as.data.frame(conf_matrix_lcs_knn$table), aes(x=Prediction, y=Reference)) + geom_tile(color = "white") +
+  scale_fill_gradient(low = "red", high = "grey") +
+  geom_text(aes(label = Freq), color = "orange", size = 4) +
+  labs(title = "Lowest Corr Subset(3) KNN",
+       x = "Predicted Class",
+       y = "Actual Class") +
+  theme_minimal()
+```
+
+Try Models with 8 factors from FA
+```{r}
+highest_corr_subset_fs = coded_data[c("Weight", "CAEC", "family_history_with_overweight", "Age", "CH2O", "CALC", "FAVC", "Height","NObeyesdad")]
+as.data.frame(highest_corr_subset_fs)
+typeof(highest_corr_subset_fs)
+highest_corr_subset_fs$NObeyesdad = as.numeric(highest_corr_subset_fs$NObeyesdad)
+
+corr_matrix_hcs_fs = cor(highest_corr_subset_fs)
+
+ggpairs(highest_corr_subset_fs) 
+ggcorrplot(corr_matrix_hcs_fs, method = "circle")
+
+set.seed(123)
+train_index_hcs_fs = createDataPartition(highest_corr_subset_fs$NObeyesdad, p = 0.8, list = FALSE)
+train_data_hcs_fs = highest_corr_subset_fs[train_index_hcs_fs,]
+test_data_hcs_fs = highest_corr_subset_fs[-train_index_hcs_fs,]
+
+lr_model_hcs_fs = multinom(NObeyesdad ~ ., data=train_data_hcs_fs)
+summary(lr_model_hcs_fs)
+predictions = predict(lr_model_hcs_fs, test_data_hcs_fs)
+
+levels(predictions)
+levels(as.factor(test_data_hcs_fs$NObeyesdad))
+
+conf_matrix_lr_hcs_fs = confusionMatrix(predictions, as.factor(test_data_hcs_fs$NObeyesdad))
+print(conf_matrix_lr_hcs_fs)
+
+ggplot(data=as.data.frame(conf_matrix_lr_hcs_fs$table), aes(x=Prediction, y=Reference)) + geom_tile(color = "white") +
+  scale_fill_gradient(low = "red", high = "darkblue") +
+  geom_text(aes(label = Freq), color = "purple", size = 5, show.legend = TRUE) +
+  labs(title = "Factor Lvl Subset(8) LR",
+       x = "Predicted Class",
+       y = "Actual Class") +
+  theme_minimal()
+
+rf_model_hcs_fs = randomForest(NObeyesdad ~ ., data = train_data_hcs_fs, ntree = 100, mtry = 3, importance = TRUE)
+predictions_rf = predict(rf_model_hcs_fs, test_data_hcs_fs)
+print(predictions_rf)
+conf_matrix_rf_hcs_fs = confusionMatrix(factor(predictions, levels = 1:7), as.factor(test_data_hcs_fs$NObeyesdad))
+conf_matrix_rf_hcs_fs
+
+ggplot(data=as.data.frame(conf_matrix_rf_hcs_fs$table), aes(x=Prediction, y=Reference)) + geom_tile(color = "white") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  geom_text(aes(label = Freq), color = "purple", size = 5) +
+  labs(title = "Factor Lvl Subset(8) RF",
+       x = "Predicted Class",
+       y = "Actual Class") +
+  theme_minimal()
+
+set.seed(123)
+knn_model_hcs_fs = train(
+  NObeyesdad ~ ., 
+  data = train_data_hcs_fs, 
+  method = "knn",
+  tuneLength = 10,  # Tunes k value from 1 to 10
+  trControl = trainControl(method = "cv", number = 10) # 10-fold cross-validation
+)
+print(knn_model_hcs_fs)
+
+predictions_knn = predict(knn_model_hcs_fs, test_data_hcs_fs)
+predictions_knn
+conf_matrix_hcs_fs_knn = confusionMatrix(factor(predictions_knn, levels = 1:7), as.factor(test_data_hcs$NObeyesdad))
+print(conf_matrix_hcs_knn)
+
+ggplot(data=as.data.frame(conf_matrix_hcs_knn$table), aes(x=Prediction, y=Reference)) + geom_tile(color = "white") +
+  geom_text(aes(label = Freq), color = "purple", size = 5) +
+  labs(title = "Factor Lvl Subset(8) KNN",
+       x = "Predicted Class",
+       y = "Actual Class") +
+  theme_minimal()
+```
+
